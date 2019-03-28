@@ -1,1 +1,1 @@
-# structured-streaming-dis-plugin
+# DIS SDK for StructuredStreaming
