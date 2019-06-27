@@ -1,6 +1,6 @@
 package org.apache.spark.sql.dis.source
 
-import org.apache.kafka.common.TopicPartition
+import com.huaweicloud.dis.adapter.kafka.common.TopicPartition
 import org.apache.spark.sql.dis.JsonUtils
 import org.apache.spark.sql.execution.streaming.{Offset, SerializedOffset}
 

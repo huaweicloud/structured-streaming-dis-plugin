@@ -3,13 +3,13 @@ package org.apache.spark.sql.dis.source
 import java.util.concurrent.TimeoutException
 import java.{util => ju}
 
-import com.huaweicloud.dis.adapter.kafka.consumer.DISKafkaConsumer
-import org.apache.kafka.clients.consumer.{ConsumerConfig, ConsumerRecord, OffsetOutOfRangeException}
-import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.serialization.ByteArrayDeserializer
-import org.apache.spark.internal.Logging
+import com.huaweicloud.dis.adapter.common.consumer.DisConsumerConfig
+import com.huaweicloud.dis.adapter.kafka.clients.consumer.{ConsumerRecord, DISKafkaConsumer}
+import com.huaweicloud.dis.adapter.kafka.common.TopicPartition
+import com.huaweicloud.dis.adapter.kafka.common.serialization.ByteArrayDeserializer
+import com.huaweicloud.dis.exception.DISSequenceNumberOutOfRangeException
 import org.apache.spark.sql.dis.source.DISKafkaSource._
-import org.apache.spark.sql.dis.{BackOffExecution, ExponentialBackOff}
+import org.apache.spark.sql.dis.{BackOffExecution, ExponentialBackOff, MyLogging}
 import org.apache.spark.{SparkEnv, SparkException, TaskContext}
 
 import scala.collection.JavaConverters._
@@ -22,11 +22,11 @@ import scala.collection.JavaConverters._
   */
 private[source] case class CachedDISKafkaConsumer private(
                                                            topicPartition: TopicPartition,
-                                                           kafkaParams: ju.Map[String, Object]) extends Logging {
+                                                           kafkaParams: ju.Map[String, Object]) extends MyLogging {
 
   import CachedDISKafkaConsumer._
 
-  private val groupId = kafkaParams.get(ConsumerConfig.GROUP_ID_CONFIG).asInstanceOf[String]
+  private val groupId = kafkaParams.get(DisConsumerConfig.GROUP_ID_CONFIG).asInstanceOf[String]
 
   private var consumer = createConsumer
 
@@ -82,7 +82,7 @@ private[source] case class CachedDISKafkaConsumer private(
            failOnDataLoss: Boolean): ConsumerRecord[Array[Byte], Array[Byte]] = {
     require(offset < untilOffset,
       s"offset must always be less than untilOffset [offset: $offset, untilOffset: $untilOffset]")
-    logDebug(s"Get $groupId $topicPartition nextOffset $nextOffsetInFetchedData requested $offset")
+    myLogDebug(s"Get $groupId $topicPartition nextOffset $nextOffsetInFetchedData requested $offset")
     // The following loop is basically for `failOnDataLoss = false`. When `failOnDataLoss` is
     // `false`, first, we will try to fetch the record at `offset`. If no such record exists, then
     // we will move to the next available offset within `[offset, untilOffset)` and retry.
@@ -92,7 +92,7 @@ private[source] case class CachedDISKafkaConsumer private(
       try {
         return fetchData(toFetchOffset, untilOffset, pollTimeoutMs, failOnDataLoss)
       } catch {
-        case e: OffsetOutOfRangeException =>
+        case e: DISSequenceNumberOutOfRangeException =>
           // When there is some error thrown, it's better to use a new consumer to drop all cached
           // states in the old consumer. We don't need to worry about the performance because this
           // is not a common path.
@@ -112,7 +112,7 @@ private[source] case class CachedDISKafkaConsumer private(
     */
   private def getEarliestAvailableOffsetBetween(offset: Long, untilOffset: Long): Long = {
     val (earliestOffset, latestOffset) = getAvailableOffsetRange()
-    logWarning(s"Some data may be lost. Recovering from the earliest offset: $earliestOffset")
+    myLogWarning(s"Some data may be lost. Recovering from the earliest offset: $earliestOffset")
     if (offset >= latestOffset || earliestOffset >= untilOffset) {
       // [offset, untilOffset) and [earliestOffset, latestOffset) have no overlap,
       // either
@@ -132,7 +132,7 @@ private[source] case class CachedDISKafkaConsumer private(
          | Offset ${offset} is out of range, and records in [$offset, $untilOffset) will be
          | skipped ${additionalMessage(failOnDataLoss = false)}
         """.stripMargin
-      logWarning(warningMessage)
+      myLogWarning(warningMessage)
       UNKNOWN_OFFSET
     } else if (offset >= earliestOffset) {
       // -----------------------------------------------------------------------------
@@ -143,7 +143,7 @@ private[source] case class CachedDISKafkaConsumer private(
       // This will happen when a topic is deleted and recreated, and new data are pushed very fast,
       // then we will see `offset` disappears first then appears again. Although the parameters
       // are same, the state in Kafka cluster is changed, so the outer loop won't be endless.
-      logWarning(s"Found a disappeared offset $offset. " +
+      myLogWarning(s"Found a disappeared offset $offset. " +
         s"Some data may be lost ${additionalMessage(failOnDataLoss = false)}")
       offset
     } else {
@@ -157,7 +157,7 @@ private[source] case class CachedDISKafkaConsumer private(
          | Offset ${offset} is out of range, and records in [$offset, $earliestOffset) will be
          | skipped ${additionalMessage(failOnDataLoss = false)}
         """.stripMargin
-      logWarning(warningMessage)
+      myLogWarning(warningMessage)
       earliestOffset
     }
   }
@@ -167,7 +167,7 @@ private[source] case class CachedDISKafkaConsumer private(
     * (if failOnDataLoss = true), or return the next available offset within [offset, untilOffset),
     * or null.
     *
-    * @throws OffsetOutOfRangeException if `offset` is out of range
+    * @throws DISSequenceNumberOutOfRangeException if `offset` is out of range
     * @throws TimeoutException          if cannot fetch the record in `pollTimeoutMs` milliseconds.
     */
   private def fetchData(
@@ -191,8 +191,8 @@ private[source] case class CachedDISKafkaConsumer private(
       // - Cannot fetch any data before timeout. TimeoutException will be thrown.
       val (earliestOffset, latestOffset) = getAvailableOffsetRange()
       if (offset < earliestOffset || offset >= latestOffset) {
-        throw new OffsetOutOfRangeException(
-          Map(topicPartition -> java.lang.Long.valueOf(offset)).asJava)
+        throw new DISSequenceNumberOutOfRangeException(
+          Map(topicPartition -> java.lang.Long.valueOf(offset)).asJava.toString)
       } else {
         throw new TimeoutException(
           s"Cannot fetch record for offset $offset in $pollTimeoutMs milliseconds")
@@ -270,9 +270,9 @@ private[source] case class CachedDISKafkaConsumer private(
       }
     } else {
       if (cause != null) {
-        logWarning(finalMessage)
+        myLogWarning(finalMessage)
       } else {
-        logWarning(finalMessage, cause)
+        myLogWarning(finalMessage, cause)
       }
     }
   }
@@ -280,7 +280,7 @@ private[source] case class CachedDISKafkaConsumer private(
   private def close(): Unit = consumer.close()
 
   private def seek(offset: Long): Unit = {
-    logInfo(s"Seeking to $groupId $topicPartition $offset")
+    myLogInfo(s"Seeking to $groupId $topicPartition $offset")
     consumer.seek(topicPartition, offset)
   }
 
@@ -307,7 +307,7 @@ private[source] case class CachedDISKafkaConsumer private(
           execution = backOff.start
         }
         val sleepTime = execution.nextBackOff
-        logWarning(s"Polled $topicPartition 0 records cost ${callEndTime - callStartTime}ms" +
+        myLogWarning(s"Polled $topicPartition 0 records cost ${callEndTime - callStartTime}ms" +
           s", will retry after ${sleepTime}ms, total retry count $retryCount, total cost ${totalCostTime}ms")
         Thread.sleep(sleepTime)
         retryCount = retryCount + 1
@@ -323,7 +323,7 @@ private[source] case class CachedDISKafkaConsumer private(
     if (retryCount > 0) {
       log += s", total retry count $retryCount, total cost ${totalCostTime}ms."
     }
-    logInfo(log)
+    myLogInfo(log)
     fetchedData = recordList.iterator
   }
 
@@ -340,7 +340,7 @@ private[source] case class CachedDISKafkaConsumer private(
   }
 }
 
-private[source] object CachedDISKafkaConsumer extends Logging {
+private[source] object CachedDISKafkaConsumer extends MyLogging {
 
   private val UNKNOWN_OFFSET = -2L
 
@@ -353,13 +353,13 @@ private[source] object CachedDISKafkaConsumer extends Logging {
       override def removeEldestEntry(
                                       entry: ju.Map.Entry[CacheKey, CachedDISKafkaConsumer]): Boolean = {
         if (this.size > capacity) {
-          logWarning(s"KafkaConsumer cache hitting max capacity of $capacity, " +
+          myLogWarning(s"KafkaConsumer cache hitting max capacity of $capacity, " +
             s"removing consumer for ${entry.getKey}")
           try {
             entry.getValue.close()
           } catch {
             case e: SparkException =>
-              logError(s"Error closing earliest Kafka consumer for ${entry.getKey}", e)
+              myLogError(s"Error closing earliest Kafka consumer for ${entry.getKey}", e)
           }
           true
         } else {
@@ -377,7 +377,7 @@ private[source] object CachedDISKafkaConsumer extends Logging {
                    topic: String,
                    partition: Int,
                    kafkaParams: ju.Map[String, Object]): CachedDISKafkaConsumer = synchronized {
-    val groupId = kafkaParams.get(ConsumerConfig.GROUP_ID_CONFIG).asInstanceOf[String]
+    val groupId = kafkaParams.get(DisConsumerConfig.GROUP_ID_CONFIG).asInstanceOf[String]
     val topicPartition = new TopicPartition(topic, partition)
     val key = CacheKey(groupId, topicPartition)
 

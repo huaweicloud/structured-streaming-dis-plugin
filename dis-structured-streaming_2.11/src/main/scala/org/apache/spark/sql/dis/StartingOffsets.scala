@@ -1,6 +1,7 @@
 package org.apache.spark.sql.dis
 
-import org.apache.kafka.common.TopicPartition
+import com.huaweicloud.dis.adapter.kafka.common.TopicPartition
+
 
 /*
  * Values that can be specified for config startingOffsets

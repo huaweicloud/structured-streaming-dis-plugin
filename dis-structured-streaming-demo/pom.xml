@@ -10,7 +10,7 @@
     <packaging>jar</packaging>
 
     <properties>
-        <dis-kafka-adapter.version>1.1.1</dis-kafka-adapter.version>
+        <dis-kafka-adapter.version>1.2.2</dis-kafka-adapter.version>
         <dis-structured-streaming_2.11.version>1.1.1</dis-structured-streaming_2.11.version>
         <scala.binary.version>2.11</scala.binary.version>
         <spark_2.11.version>2.1.0</spark_2.11.version>

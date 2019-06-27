@@ -3,16 +3,14 @@ package org.apache.spark.sql.dis.source
 import java.util.UUID
 import java.{util => ju}
 
-import com.huaweicloud.dis.adapter.kafka.consumer.Fetcher
+import com.huaweicloud.dis.adapter.common.consumer.{DisConsumerConfig, Fetcher}
+import com.huaweicloud.dis.adapter.kafka.common.TopicPartition
+import com.huaweicloud.dis.adapter.kafka.common.serialization.ByteArrayDeserializer
 import com.huaweicloud.dis.iface.stream.request.DescribeStreamRequest
 import com.huaweicloud.dis.{DISClient, DISConfig}
-import org.apache.kafka.clients.consumer.ConsumerConfig
-import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.serialization.ByteArrayDeserializer
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SQLContext
-import org.apache.spark.sql.dis.source.DISKafkaSource._
-import org.apache.spark.sql.dis.{EarliestOffsets, JsonUtils, LatestOffsets, SpecificOffsets}
+import org.apache.spark.sql.dis._
+import org.apache.spark.sql.dis.source.DISKafkaSource.AssignStrategy
 import org.apache.spark.sql.execution.streaming.Source
 import org.apache.spark.sql.sources.{DataSourceRegister, StreamSourceProvider}
 import org.apache.spark.sql.types.StructType
@@ -25,7 +23,7 @@ import scala.collection.JavaConverters._
   * missing options even before the query is started.
   */
 private[source] class DISKafkaSourceProvider extends StreamSourceProvider
-  with DataSourceRegister with Logging {
+  with DataSourceRegister with MyLogging {
 
   import DISKafkaSourceProvider._
 
@@ -50,7 +48,7 @@ private[source] class DISKafkaSourceProvider extends StreamSourceProvider
                              providerName: String,
                              parameters: Map[String, String]): Source = {
 
-    //parameters.keySet.foreach{ k => logInfo("!!!!parameters " + k + "|" + parameters(k))}
+    //parameters.keySet.foreach{ k => myLogInfo("!!!!parameters " + k + "|" + parameters(k))}
     
     
     validateOptions(parameters)
@@ -74,44 +72,46 @@ private[source] class DISKafkaSourceProvider extends StreamSourceProvider
 
     val kafkaParamsForStrategy =
       ConfigUpdater("source", specifiedKafkaParams)
-        .set(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, deserClassName)
-        .set(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, deserClassName)
+        .set(DisConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, deserClassName)
+        .set(DisConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, deserClassName)
 
         // So that consumers in Kafka source do not mess with any existing group id
-        .set(ConsumerConfig.GROUP_ID_CONFIG, s"$uniqueGroupId-driver")
+        .set(DisConsumerConfig.GROUP_ID_CONFIG, s"$uniqueGroupId-driver")
 
         // Set to "earliest" to avoid exceptions. However, DISKafkaSource will fetch the initial
         // offsets by itself instead of counting on KafkaConsumer.
-        .set(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
+        .set(DisConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
 
         // So that consumers in the driver does not commit offsets unnecessarily
-        .set(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")
+        .set(DisConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")
 
-        // So that the driver does not pull too much data
-        .set(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, new java.lang.Integer(1))
+//        // So that the driver does not pull too much data
+//        .set(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, new java.lang.Integer(1))
+//
+//        // If buffer config is not set, set it to reasonable value to work around
+//        // buffer issues (see KAFKA-3135)
+//        .setIfUnset(ConsumerConfig.RECEIVE_BUFFER_CONFIG, 65536: java.lang.Integer)
 
-        // If buffer config is not set, set it to reasonable value to work around
-        // buffer issues (see KAFKA-3135)
-        .setIfUnset(ConsumerConfig.RECEIVE_BUFFER_CONFIG, 65536: java.lang.Integer)
         .build()
     
     val kafkaParamsForExecutors =
       ConfigUpdater("executor", specifiedKafkaParams)
-        .set(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, deserClassName)
-        .set(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, deserClassName)
+        .set(DisConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, deserClassName)
+        .set(DisConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, deserClassName)
 
         // Make sure executors do only what the driver tells them.
-        .set(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "none")
+        .set(DisConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "none")
 
         // So that consumers in executors do not mess with any existing group id
-        .set(ConsumerConfig.GROUP_ID_CONFIG, s"$uniqueGroupId-executor")
+        .set(DisConsumerConfig.GROUP_ID_CONFIG, s"$uniqueGroupId-executor")
 
         // So that consumers in executors does not commit offsets unnecessarily
-        .set(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")
+        .set(DisConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")
 
-        // If buffer config is not set, set it to reasonable value to work around
-        // buffer issues (see KAFKA-3135)
-        .setIfUnset(ConsumerConfig.RECEIVE_BUFFER_CONFIG, 65536: java.lang.Integer)
+//        // If buffer config is not set, set it to reasonable value to work around
+//        // buffer issues (see KAFKA-3135)
+//        .setIfUnset(ConsumerConfig.RECEIVE_BUFFER_CONFIG, 65536: java.lang.Integer)
+
         .build()
     
     var streamName:String = null
@@ -209,16 +209,16 @@ private[source] class DISKafkaSourceProvider extends StreamSourceProvider
 
     // Validate user-specified Kafka options
 
-    if (caseInsensitiveParams.contains(s"${ConsumerConfig.GROUP_ID_CONFIG}")) {
+    if (caseInsensitiveParams.contains(s"${DisConsumerConfig.GROUP_ID_CONFIG}")) {
       throw new IllegalArgumentException(
-        s"DIS option '${ConsumerConfig.GROUP_ID_CONFIG}' is not supported as " +
+        s"DIS option '${DisConsumerConfig.GROUP_ID_CONFIG}' is not supported as " +
           s"user-specified consumer groups is not used to track offsets.")
     }
 
-    if (caseInsensitiveParams.contains(s"${ConsumerConfig.AUTO_OFFSET_RESET_CONFIG}")) {
+    if (caseInsensitiveParams.contains(s"${DisConsumerConfig.AUTO_OFFSET_RESET_CONFIG}")) {
       throw new IllegalArgumentException(
         s"""
-           |DIS option '${ConsumerConfig.AUTO_OFFSET_RESET_CONFIG}' is not supported.
+           |DIS option '${DisConsumerConfig.AUTO_OFFSET_RESET_CONFIG}' is not supported.
            |Instead set the source option '$PROPERTY_STARTING_OFFSETS' to 'earliest' or 'latest'
            |to specify where to start. Structured Streaming manages which offsets are consumed
            |internally, rather than relying on the DISKafkaConsumer to do it. This will ensure that no
@@ -229,23 +229,24 @@ private[source] class DISKafkaSourceProvider extends StreamSourceProvider
          """.stripMargin)
     }
 
-    if (caseInsensitiveParams.contains(s"${ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG}")) {
+    if (caseInsensitiveParams.contains(s"${DisConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG}")) {
       throw new IllegalArgumentException(
-        s"DIS option '${ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG}' is not supported as keys "
+        s"DIS option '${DisConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG}' is not supported as keys "
           + "are deserialized as byte arrays with ByteArrayDeserializer. Use DataFrame operations "
           + "to explicitly deserialize the keys.")
     }
 
-    if (caseInsensitiveParams.contains(s"${ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG}")) {
+    if (caseInsensitiveParams.contains(s"${DisConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG}")) {
       throw new IllegalArgumentException(
-        s"DIS option '${ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG}' is not supported as "
+        s"DIS option '${DisConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG}' is not supported as "
           + "value are deserialized as byte arrays with ByteArrayDeserializer. Use DataFrame "
           + "operations to explicitly deserialize the values.")
     }
 
     val otherUnsupportedConfigs = Seq(
-      ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, // committing correctly requires new APIs in Source
-      ConsumerConfig.INTERCEPTOR_CLASSES_CONFIG) // interceptors can modify payload, so not safe
+      DisConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG // committing correctly requires new APIs in Source
+      // ConsumerConfig.INTERCEPTOR_CLASSES_CONFIG
+    ) // interceptors can modify payload, so not safe
 
     otherUnsupportedConfigs.foreach { c =>
       if (caseInsensitiveParams.contains(s"kafka.$c")) {
@@ -287,14 +288,14 @@ private[source] class DISKafkaSourceProvider extends StreamSourceProvider
 
     def set(key: String, value: Object): this.type = {
       map.put(key, value)
-      logInfo(s"$module: Set $key to $value, earlier value: ${kafkaParams.get(key).getOrElse("")}")
+      myLogInfo(s"$module: Set $key to $value, earlier value: ${kafkaParams.get(key).getOrElse("")}")
       this
     }
 
     def setIfUnset(key: String, value: Object): ConfigUpdater = {
       if (!map.containsKey(key)) {
         map.put(key, value)
-        logInfo(s"$module: Set $key to $value")
+        myLogInfo(s"$module: Set $key to $value")
       }
       this
     }
@@ -314,7 +315,7 @@ private[source] class DISKafkaSourceProvider extends StreamSourceProvider
       topicPartitions = topicPartitions :+ new TopicPartition(streamName, index)
     }
 
-    logInfo(s"DIS Stream [$streamName] has ${topicPartitions.size} partitions.")
+    myLogInfo(s"DIS Stream [$streamName] has ${topicPartitions.size} partitions.")
     topicPartitions
   }
 }
@@ -337,11 +338,10 @@ object DISKafkaSourceProvider {
   val PROPERTY_BODY_SERIALIZE_TYPE: String = DISConfig.PROPERTY_BODY_SERIALIZE_TYPE.toLowerCase
   val PROPERTY_CONFIG_PROVIDER_CLASS: String = DISConfig.PROPERTY_CONFIG_PROVIDER_CLASS.toLowerCase
   val PROPERTY_DATA_PASSWORD: String = DISConfig.PROPERTY_DATA_PASSWORD.toLowerCase
-  val PROPERTY_AUTO_OFFSET_RESET: String = ConsumerConfig.AUTO_OFFSET_RESET_CONFIG.toLowerCase
-  val PROPERTY_MAX_PARTITION_FETCH_RECORDS: String = Fetcher.KEY_MAX_PARTITION_FETCH_RECORDS.toLowerCase
-  val PROPERTY_MAX_FETCH_THREADS: String = Fetcher.KEY_MAX_FETCH_THREADS.toLowerCase
-  val PROPERTY_KEY_DESERIALIZER_CLASS: String = ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG.toLowerCase
-  val PROPERTY_VALUE_DESERIALIZER_CLASS: String = ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG.toLowerCase
+  val PROPERTY_AUTO_OFFSET_RESET: String = DisConsumerConfig.AUTO_OFFSET_RESET_CONFIG.toLowerCase
+  val PROPERTY_MAX_FETCH_THREADS: String = DisConsumerConfig.MAX_FETCH_THREADS_CONFIG.toLowerCase
+  val PROPERTY_KEY_DESERIALIZER_CLASS: String = DisConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG.toLowerCase
+  val PROPERTY_VALUE_DESERIALIZER_CLASS: String = DisConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG.toLowerCase
   
   val STRATEGY_OPTION_KEYS = Set(PROPERTY_STREAM_NAME)
   val FAIL_ON_DATA_LOSS_OPTION_KEY = "failondataloss"
@@ -358,15 +358,13 @@ object DISKafkaSourceProvider {
         updateDisConfigParam(disConfig, DISConfig.PROPERTY_SK, disParams.get(PROPERTY_SK), true)
         updateDisConfigParam(disConfig, DISConfig.PROPERTY_PROJECT_ID, disParams.get(PROPERTY_PROJECT_ID), true)
         updateDisConfigParam(disConfig, DISConfig.PROPERTY_ENDPOINT, disParams.get(PROPERTY_ENDPOINT), false)
-        updateDisConfigParam(disConfig, ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false", false)
+        updateDisConfigParam(disConfig, DisConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false", false)
         updateDisConfigParam(disConfig, DISConfig.PROPERTY_IS_DEFAULT_TRUSTED_JKS_ENABLED,
           disParams.getOrDefault(PROPERTY_IS_DEFAULT_TRUSTED_JKS_ENABLED, "false"), false)
-        updateDisConfigParam(disConfig, Fetcher.KEY_MAX_PARTITION_FETCH_RECORDS,
-          disParams.getOrDefault(PROPERTY_MAX_PARTITION_FETCH_RECORDS, "500"), false)
-        updateDisConfigParam(disConfig, Fetcher.KEY_MAX_FETCH_THREADS,
+        updateDisConfigParam(disConfig, DisConsumerConfig.MAX_FETCH_THREADS_CONFIG,
           disParams.getOrDefault(PROPERTY_MAX_FETCH_THREADS, "1"), false)
-        updateDisConfigParam(disConfig, ConsumerConfig.AUTO_OFFSET_RESET_CONFIG,
-          disParams.getOrDefault(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "LATEST").toString.toUpperCase, false)
+        updateDisConfigParam(disConfig, DisConsumerConfig.AUTO_OFFSET_RESET_CONFIG,
+          disParams.getOrDefault(DisConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "LATEST").toString.toUpperCase, false)
         updateDisConfigParam(disConfig, DISConfig.PROPERTY_CONNECTION_TIMEOUT,
           disParams.get(PROPERTY_CONNECTION_TIMEOUT), false)
         updateDisConfigParam(disConfig, DISConfig.PROPERTY_SOCKET_TIMEOUT,
@@ -379,8 +377,8 @@ object DISKafkaSourceProvider {
           disParams.get(PROPERTY_DATA_PASSWORD), false)
         updateDisConfigParam(disConfig, DISConfig.PROPERTY_CONFIG_PROVIDER_CLASS,
           disParams.get(PROPERTY_CONFIG_PROVIDER_CLASS), false)
-        disConfig.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")
-        disConfig.remove(ConsumerConfig.GROUP_ID_CONFIG)
+        disConfig.put(DisConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")
+        disConfig.remove(DisConsumerConfig.GROUP_ID_CONFIG)
 
         disConfig
       }

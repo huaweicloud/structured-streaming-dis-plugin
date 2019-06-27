@@ -2,8 +2,8 @@ package org.apache.spark.sql.dis.source
 
 import java.{util => ju}
 
-import org.apache.kafka.clients.consumer.ConsumerRecord
-import org.apache.kafka.common.TopicPartition
+import com.huaweicloud.dis.adapter.kafka.clients.consumer.ConsumerRecord
+import com.huaweicloud.dis.adapter.kafka.common.TopicPartition
 import org.apache.spark.partial.{BoundedDouble, PartialResult}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel

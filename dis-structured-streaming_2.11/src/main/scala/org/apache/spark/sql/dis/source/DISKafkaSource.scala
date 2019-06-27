@@ -4,19 +4,18 @@ import java.io._
 import java.nio.charset.StandardCharsets
 import java.{util => ju}
 
-import com.huaweicloud.dis.adapter.kafka.consumer.DISKafkaConsumer
-import org.apache.kafka.clients.consumer.internals.NoOpConsumerRebalanceListener
-import org.apache.kafka.clients.consumer.{Consumer, KafkaConsumer, OffsetOutOfRangeException}
-import org.apache.kafka.common.TopicPartition
-import org.apache.kafka.common.serialization.ByteArrayDeserializer
+import com.huaweicloud.dis.adapter.kafka.clients.consumer.internals.NoOpConsumerRebalanceListener
+import com.huaweicloud.dis.adapter.kafka.clients.consumer.{Consumer, DISKafkaConsumer}
+import com.huaweicloud.dis.adapter.kafka.common.TopicPartition
+import com.huaweicloud.dis.adapter.kafka.common.serialization.ByteArrayDeserializer
+import com.huaweicloud.dis.exception.DISSequenceNumberOutOfRangeException
 import org.apache.spark.SparkContext
-import org.apache.spark.internal.Logging
 import org.apache.spark.scheduler.ExecutorCacheTaskLocation
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.dis.source.DISKafkaSource._
-import org.apache.spark.sql.dis.{EarliestOffsets, LatestOffsets, SpecificOffsets, StartingOffsets}
+import org.apache.spark.sql.dis._
 import org.apache.spark.sql.execution.streaming._
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -26,7 +25,7 @@ import scala.collection.JavaConverters._
 import scala.util.control.NonFatal
 
 /**
-  * A [[Source]] that uses Kafka's own [[KafkaConsumer]] API to reads data from Kafka. The design
+  * A [[Source]] that uses Kafka's own [[DISKafkaConsumer]] API to reads data from Kafka. The design
   * for this source is as follows.
   *
   * - The [[DISKafkaSourceOffset]] is the custom [[Offset]] defined for this source that contains
@@ -37,7 +36,7 @@ import scala.util.control.NonFatal
   *
   * - The [[ConsumerStrategy]] class defines which Kafka topics and partitions should be read
   *   by this source. These strategies directly correspond to the different consumption options
-  *   in . This class is designed to return a configured [[KafkaConsumer]] that is used by the
+  *   in . This class is designed to return a configured [[DISKafkaConsumer]] that is used by the
   *   [[DISKafkaSource]] to query for the offsets. See the docs on
   *   [[org.apache.spark.sql.dis.source.DISKafkaSource.ConsumerStrategy]] for more details.
   *
@@ -74,7 +73,7 @@ private[source] case class DISKafkaSource(
                                           metadataPath: String,
                                           startingOffsets: StartingOffsets,
                                           failOnDataLoss: Boolean)
-  extends Source with Logging {
+  extends Source with MyLogging {
 
   private val sc = sqlContext.sparkContext
 
@@ -104,7 +103,7 @@ private[source] case class DISKafkaSource(
     * `KafkaConsumer.poll` may hang forever (KAFKA-1894).
     */
   private lazy val initialPartitionOffsets = {
-    logInfo(s"init offset metadataPath: $metadataPath")
+    myLogInfo(s"init offset metadataPath: $metadataPath")
     val metadataLog =
       new HDFSMetadataLog[DISKafkaSourceOffset](sqlContext.sparkSession, metadataPath) {
         override def serialize(metadata: DISKafkaSourceOffset, out: OutputStream): Unit = {
@@ -128,7 +127,7 @@ private[source] case class DISKafkaSource(
         case SpecificOffsets(p) => DISKafkaSourceOffset(fetchSpecificStartingOffsets(p))
       }
       metadataLog.add(0, offsets)
-      logInfo(s"Initial offsets: $offsets")
+      myLogInfo(s"Initial offsets: $offsets")
       offsets
     }.partitionToOffsets
   }
@@ -154,7 +153,7 @@ private[source] case class DISKafkaSource(
     }
 
     currentPartitionOffsets = Some(offsets)
-    logDebug(s"GetOffset: ${offsets.toSeq.map(_.toString).sorted}, cost ${System.currentTimeMillis() - startMS}ms")
+    myLogDebug(s"GetOffset: ${offsets.toSeq.map(_.toString).sorted}, cost ${System.currentTimeMillis() - startMS}ms")
     Some(DISKafkaSourceOffset(offsets))
   }
 
@@ -169,7 +168,7 @@ private[source] case class DISKafkaSource(
         // If begin isn't defined, something's wrong, but let alert logic in getBatch handle it
         from.get(tp).orElse(fromNew.get(tp)).flatMap { begin =>
           val size = end - begin
-          logInfo(s"rateLimit $tp size is $size")
+          myLogInfo(s"rateLimit $tp size is $size")
           if (size > 0) Some(tp -> size) else None
         }
     }
@@ -182,10 +181,10 @@ private[source] case class DISKafkaSource(
           tp -> sizes.get(tp).map { size =>
             val begin = from.get(tp).getOrElse(fromNew(tp))
             val prorate = limit * (size / total)
-            logInfo(s"rateLimit $tp prorated amount is $prorate")
+            myLogInfo(s"rateLimit $tp prorated amount is $prorate")
             // Don't completely starve small topicpartitions
             val off = begin + (if (prorate < 1) Math.ceil(prorate) else Math.floor(prorate)).toLong
-            logInfo(s"rateLimit $tp new offset is $off")
+            myLogInfo(s"rateLimit $tp new offset is $off")
             // Paranoia, make sure not to return an offset that's past end
             Math.min(end, off)
           }.getOrElse(end)
@@ -194,9 +193,9 @@ private[source] case class DISKafkaSource(
   }
 
   override def commit(end: Offset): Unit = {
-  //    logInfo(s"Commit ${end}")
+  //    myLogInfo(s"Commit ${end}")
   //    val h = DISKafkaSourceOffset.getPartitionOffsets(end).map { case (k, v) => (k, new OffsetAndMetadata(v)) }
-  //    logInfo(h.asJava.toString)
+  //    myLogInfo(h.asJava.toString)
   //    consumer.commitSync(new ju.HashMap[TopicPartition, OffsetAndMetadata](h.asJava))
   }
   /**
@@ -205,11 +204,11 @@ private[source] case class DISKafkaSource(
     * exclusive.
     */
   override def getBatch(start: Option[Offset], end: Offset): DataFrame = {
-    logDebug(s"getBatch ${start} ~ ${end}")
+    myLogDebug(s"getBatch ${start} ~ ${end}")
     // Make sure initialPartitionOffsets is initialized
     initialPartitionOffsets
 
-    logInfo(s"GetBatch called with start = $start, end = $end")
+    myLogInfo(s"GetBatch called with start = $start, end = $end")
     val untilPartitionOffsets = DISKafkaSourceOffset.getPartitionOffsets(end)
     val fromPartitionOffsets = start match {
       case Some(prevBatchEndOffset) =>
@@ -227,7 +226,7 @@ private[source] case class DISKafkaSource(
       reportDataLoss(
         s"Cannot find earliest offsets of ${deletedPartitions}. Some data may have been missed")
     }
-    logInfo(s"Partitions added: $newPartitionOffsets")
+    myLogInfo(s"Partitions added: $newPartitionOffsets")
     newPartitionOffsets.filter(_._2 != 0).foreach { case (p, o) =>
       reportDataLoss(
         s"Added partition $p starts from $o instead of 0. Some data may have been missed")
@@ -245,11 +244,11 @@ private[source] case class DISKafkaSource(
       newPartitionOffsets.contains(tp) || fromPartitionOffsets.contains(tp)
     }.toSeq
     // !!!!!!!!!!!!!
-    logInfo("TopicPartitions: " + topicPartitions.mkString(", "))
+    myLogInfo("TopicPartitions: " + topicPartitions.mkString(", "))
 
     val sortedExecutors = getSortedExecutorList(sc)
     val numExecutors = sortedExecutors.length
-    logInfo("Sorted executors: " + sortedExecutors.mkString(", "))
+    myLogInfo("Sorted executors: " + sortedExecutors.mkString(", "))
 
     // Calculate offset ranges
     val offsetRanges = topicPartitions.map { tp =>
@@ -290,7 +289,7 @@ private[source] case class DISKafkaSource(
         cr.timestampType.id)
     }
 
-    logInfo("GetBatch generating RDD of offset range: " +
+    myLogInfo("GetBatch generating RDD of offset range: " +
       offsetRanges.sortBy(_.topicPartition.toString).mkString(", "))
 
     // On recovery, getBatch will get called before getOffset
@@ -298,7 +297,22 @@ private[source] case class DISKafkaSource(
       currentPartitionOffsets = Some(untilPartitionOffsets)
     }
 
-    sqlContext.internalCreateDataFrame(rdd, schema)
+    val ru = scala.reflect.runtime.universe
+    val classMirror = ru.runtimeMirror(getClass.getClassLoader)
+    val sqlContextClass = classMirror.reflect(sqlContext)
+
+    val methods = ru.typeOf[SQLContext]
+    val internalCreateDataFrameMethod = methods.decl(ru.TermName(s"internalCreateDataFrame")).asMethod
+
+    val result = {
+      if (org.apache.spark.SPARK_VERSION.compareTo("2.3") >= 0) {
+        sqlContextClass.reflectMethod(internalCreateDataFrameMethod)(rdd, schema, true)
+      }
+      else {
+        sqlContextClass.reflectMethod(internalCreateDataFrameMethod)(rdd, schema)
+      }
+    }
+    result.asInstanceOf[org.apache.spark.sql.DataFrame]
   }
 
   /** Stop this source and free any resources it has allocated. */
@@ -322,7 +336,7 @@ private[source] case class DISKafkaSource(
         "If startingOffsets contains specific offsets, you must specify all TopicPartitions.\n" +
           "Use -1 for latest, -2 for earliest, if you don't care.\n" +
           s"Specified: ${partitionOffsets.keySet} Assigned: ${partitions.asScala}")
-      logInfo(s"Partitions assigned to consumer: $partitions. Seeking to $partitionOffsets")
+      myLogInfo(s"Partitions assigned to consumer: $partitions. Seeking to $partitionOffsets")
 
       partitionOffsets.foreach {
         case (tp, -1) => consumer.seekToEnd(ju.Arrays.asList(tp))
@@ -353,11 +367,11 @@ private[source] case class DISKafkaSource(
     consumer.poll(0)
     val partitions = consumer.assignment()
     consumer.pause(partitions)
-    logDebug(s"Partitions assigned to consumer: $partitions. Seeking to the beginning")
+    myLogDebug(s"Partitions assigned to consumer: $partitions. Seeking to the beginning")
 
     consumer.seekToBeginning(partitions)
     val partitionOffsets = partitions.asScala.map(p => p -> consumer.position(p)).toMap
-    logDebug(s"Got earliest offsets for partition : $partitionOffsets")
+    myLogDebug(s"Got earliest offsets for partition : $partitionOffsets")
     partitionOffsets
   }
   
@@ -369,11 +383,11 @@ private[source] case class DISKafkaSource(
     consumer.poll(0)
     val partitions = consumer.assignment()
     consumer.pause(partitions)
-    logDebug(s"Partitions assigned to consumer: $partitions. Seeking to the end.")
+    myLogDebug(s"Partitions assigned to consumer: $partitions. Seeking to the end.")
 
     consumer.seekToEnd(partitions)
     val partitionOffsets = partitions.asScala.map(p => p -> consumer.position(p)).toMap
-    logDebug(s"Got latest offsets for partition : $partitionOffsets")
+    myLogDebug(s"Got latest offsets for partition : $partitionOffsets")
     partitionOffsets
   }
 
@@ -391,7 +405,7 @@ private[source] case class DISKafkaSource(
         consumer.poll(0)
         val partitions = consumer.assignment()
         consumer.pause(partitions)
-        logDebug(s"\tPartitions assigned to consumer: $partitions")
+        myLogDebug(s"\tPartitions assigned to consumer: $partitions")
 
         // Get the earliest offset of each partition
         consumer.seekToBeginning(partitions)
@@ -400,7 +414,7 @@ private[source] case class DISKafkaSource(
           // `partitions`. So we need to ignore them
           partitions.contains(p)
         }.map(p => p -> consumer.position(p)).toMap
-        logInfo(s"Got earliest offsets for new partitions: $partitionOffsets")
+        myLogInfo(s"Got earliest offsets for new partitions: $partitionOffsets")
         partitionOffsets
       }
     }
@@ -416,7 +430,7 @@ private[source] case class DISKafkaSource(
   private def withRetriesWithoutInterrupt(
                                            body: => Map[TopicPartition, Long]): Map[TopicPartition, Long] = {
     // Make sure `KafkaConsumer.poll` won't be interrupted (KAFKA-1894)
-    assert(Thread.currentThread().isInstanceOf[StreamExecutionThread])
+    assert(Thread.currentThread().isInstanceOf[UninterruptibleThread])
 
     synchronized {
       var result: Option[Map[TopicPartition, Long]] = None
@@ -436,11 +450,11 @@ private[source] case class DISKafkaSource(
               try {
                 result = Some(body)
               } catch {
-                case x: OffsetOutOfRangeException =>
+                case x: DISSequenceNumberOutOfRangeException =>
                   reportDataLoss(x.getMessage)
                 case NonFatal(e) =>
                   lastException = e
-                  logWarning(s"Error in attempt $attempt getting Kafka offsets: ", e)
+                  myLogWarning(s"Error in attempt $attempt getting Kafka offsets: ", e)
                   attempt += 1
                   Thread.sleep(offsetFetchAttemptIntervalMs)
               }
@@ -470,7 +484,7 @@ private[source] case class DISKafkaSource(
     if (failOnDataLoss) {
       throw new IllegalStateException(message + s". $INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_TRUE")
     } else {
-      logWarning(message + s". $INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_FALSE")
+      myLogWarning(message + s". $INSTRUCTION_FOR_FAIL_ON_DATA_LOSS_FALSE")
     }
   }
 }
