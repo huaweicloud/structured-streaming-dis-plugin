@@ -9,7 +9,7 @@
         <version>1.1.1</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
-    <artifactId>dis-structured-streaming_2.11</artifactId>
+    <artifactId>huaweicloud-dis-structured-streaming_2.11</artifactId>
     <packaging>jar</packaging>
 
     <dependencies>
