@@ -18,7 +18,7 @@ The recommended way to use the DIS SDK for StructuredStreaming in your project i
     <dependency>
         <groupId>com.huaweicloud.dis</groupId>
         <artifactId>huaweicloud-dis-structured-streaming_2.11</artifactId>
-        <version>1.2.0</version>
+        <version>1.2.1</version>
         <scope>compile</scope>
     </dependency>
 
